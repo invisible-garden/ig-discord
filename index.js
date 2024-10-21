@@ -11,7 +11,6 @@ const connection = google.sheets({
 
 const client = new Discord.Client();
 
-let oldRows = [];
 let guild = null;
 
 const logError = (error) => {
@@ -55,16 +54,22 @@ const extractDiscordIDs = (rows) => {
   return rows.map((user) => user[0]);
 };
 
-const rolesMatching = (builders, others_rows, coworkers_rows) => {
+const rolesMatching = (builders, others_rows, coworkers_rows, banned) => {
   let users = {};
 
   builders.forEach(builder => {
+    if (banned.includes(builder)) {
+      return;
+    }
     users[builder] = [config.discord.builder_role];
   });
 
   others_rows.forEach(other => {
     let username = other[0].trim().toLowerCase();
     let role = other[1];
+    if (banned.includes(username)) {
+      return;
+    }
 
     if (username != "" && role != "") {
       users[username] = [config.discord.roles[role]];
@@ -74,6 +79,9 @@ const rolesMatching = (builders, others_rows, coworkers_rows) => {
   coworkers_rows.forEach(coworker => {
     let username = coworker[0].trim().toLowerCase();
     let weeks = coworker[1];
+    if (banned.includes(username)) {
+      return;
+    }
     if (username == "" || weeks == "") {
       return;
     }
@@ -92,7 +100,7 @@ const rolesMatching = (builders, others_rows, coworkers_rows) => {
   return users;
 }
 
-const assignRoles2 = async (users) => {
+const assignRoles2 = async (users, banned) => {
   try {
     console.log("Fetching discord members...");
     await guild.members.fetch({ force: true });
@@ -103,7 +111,7 @@ const assignRoles2 = async (users) => {
 
     // Filter the members that are in the server with the ones in the sheet
     const members_wr = guild.members.cache.filter((member) => {
-      console.log(member.user.username, member.nickname, member.displayName, member.user.displayName);
+      // console.log(member.user.username, member.nickname, member.displayName, member.user.displayName);
       return usernames.includes(`${member.user.username?.toLowerCase()}`) || usernames.includes(`${member.nickname?.toLowerCase()}`);
     });
 
@@ -132,13 +140,39 @@ const assignRoles2 = async (users) => {
       if (notAssignedRoles.length > 0) {
         await member.roles.add(notAssignedRoles);
         console.log(
-          `Assigned ${notAssignedRoles.map(r => r.id).join(", ")} to ${member.user.username} #${member.user.discriminator
+          `Assigned ${notAssignedRoles.map(r => r.name).join(", ")} to ${member.user.username} #${member.user.discriminator
           } `,
         );
-        // Will remove the role in case the sheet says to remove it
-      } else {
+      }
+
+      i++;
+    }
+
+    const members_banned = guild.members.cache.filter((member) => {
+      // console.log(member.user.username, member.nickname, member.displayName, member.user.displayName);
+      return banned.includes(`${member.user.username?.toLowerCase()}`) || banned.includes(`${member.nickname?.toLowerCase()}`);
+    }).map(member => member);
+
+    i = 0;
+    for (const member of members_banned) {
+      const to_remove = [];
+
+      // Check if the user already has the role assigned
+      guild.roles.cache.forEach((role) => {
+        if (role.name == '@everyone') {
+          return;
+        }
+        if (member.roles.cache.has(role.id)) {
+          to_remove.push(role);
+        }
+      });
+
+      // Can only add the role in case theu ser doesn't have it and the sheet says to add it
+      if (to_remove.length > 0) {
+        await member.roles.remove(to_remove);
         console.log(
-          `${member.user.username} #${member.user.discriminator} already has all the roles assigned`,
+          `Removed ${to_remove.map(r => r.name).join(", ")} to ${member.user.username} #${member.user.discriminator
+          } `,
         );
       }
 
@@ -163,10 +197,12 @@ const run = async () => {
   let builders = extractDiscordIDs(builder_rows).map(v => v.toLowerCase());
   let others_rows = await fetchRows(config.google.others_spreadsheetId, config.google.others_range, connection);
   let coworkers_rows = await fetchRows(config.google.others_spreadsheetId, config.google.coworkers_range, connection);
+  let banned_rows = await fetchRows(config.google.others_spreadsheetId, config.google.banned_range, connection);
+  let banned = banned_rows.map(e => e[0]);
 
-  let users = rolesMatching(builders, others_rows, coworkers_rows);
+  let users = rolesMatching(builders, others_rows, coworkers_rows, banned);
 
-  await assignRoles2(users);
+  await assignRoles2(users, banned);
 
   console.log("Done");
   process.exit(0);
